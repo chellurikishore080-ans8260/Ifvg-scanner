@@ -25,8 +25,12 @@ Actions tab -> IFVG Backtest -> Run workflow. Results land in `results/summary.m
 
 - Each coin starts with 1,00,000. Risk per trade = 1% (1,000), fixed, no compounding.
 - Position size = risk / (SL distance %), capped at 5x capital.
-- Fee 0.10% per side on position size, charged on entry and exit.
+- Fee 0.01% per side on position size, charged on entry and exit (0.02% round trip). Change it in the sidebar, or `--fee-side-pct` / the workflow input.
 - Gross = +RR x risk on a win, -1 x risk on a loss. Net = gross - fees.
 - One trade at a time per coin. If TP and SL are hit in the same candle, SL counts first.
 
-Low timeframes (1m, 5m) have a small SL distance, so fees take a large share of each trade's risk. Check the Fees column.
+Low timeframes (1m, 5m) have a small SL distance, so fees take a larger share of each trade's risk. Compare the Gross PnL and Net PnL columns to see what the fee costs.
+
+## Compare with TradingView
+
+The Pine indicator now keeps closed trades on the chart with a result label (TP hit / SL hit) and shows the win rate in its dashboard. The app has a **Trade log** (Backtest tab) listing every trade with time, levels and result. For the same trades, use the same entry mode on both sides: the Pine default is `IFVG Line`, the app default is `Confirmation Close`.

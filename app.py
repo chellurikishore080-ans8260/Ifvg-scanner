@@ -41,8 +41,9 @@ with st.sidebar:
     st.header("Capital / costs")
     capital = st.number_input("Capital per coin (1 lakh = 100000)", 1000.0, 100_000_000.0, 100_000.0, 1000.0)
     risk_pct = st.number_input("Risk per trade (% of capital)", 0.1, 10.0, 1.0, 0.1)
-    fee_side = st.number_input("Fee per side (%)", 0.0, 1.0, 0.10, 0.01,
-                               help="Binance spot taker = 0.10% per side. Charged on entry and exit.")
+    fee_side = st.number_input("Fee per side (%)", 0.0, 1.0, 0.01, 0.005, format="%.3f",
+                               help="0.01% per side by default, charged on entry and exit (0.02% round trip). "
+                                    "Set 0 to see the pure strategy result.")
     max_lev = st.number_input("Max leverage (position cap)", 1.0, 50.0, 5.0, 1.0)
 
 params = dict(E.DEFAULT_PARAMS, filter=flt, entry_mode=entry_mode, sl_mult=sl_mult, atr_len=int(atr_len),
@@ -108,6 +109,7 @@ with tab_bt:
         st.session_state["bt_rows"] = rows
         st.session_state["bt_fails"] = fails
         st.session_state["bt_cap"] = capital
+        st.session_state["bt_bars"] = bars
 
     rows = st.session_state.get("bt_rows")
     if rows:
@@ -131,6 +133,23 @@ with tab_bt:
         coin_df = coin_df.sort_values("net_pnl", ascending=False)[
             ["coin", "trades", "wins", "win_rate", "gross_pnl", "fees", "net_pnl", "ret_pct", "profit_factor", "max_dd", "bars"]]
         st.dataframe(coin_df, width="stretch", hide_index=True)
+        with st.expander("Trade log - every trade of one coin (compare with the TradingView labels)"):
+            coins_avail = sorted({r["coin"] for r in rows})
+            lc1, lc2, lc3 = st.columns(3)
+            log_coin = lc1.selectbox("Coin", coins_avail, key="log_coin")
+            log_tf = lc2.selectbox("Timeframe ", sorted({r["timeframe"] for r in rows}, key=E.TFS.index), key="log_tf")
+            log_rr = lc3.selectbox("RR ", sorted({r["rr"] for r in rows}), format_func=lambda x: f"{x}R", key="log_rr")
+            try:
+                ldf = cached_klines(log_coin + "USDT", log_tf, st.session_state.get("bt_bars", bars))
+                tl = E.trade_log(ldf, log_rr, params) if ldf is not None else pd.DataFrame()
+            except Exception as e:
+                tl = pd.DataFrame()
+                st.warning(f"Could not load candles: {e}")
+            if tl.empty:
+                st.info("No closed trades for this selection.")
+            else:
+                st.caption("Times are UTC (Binance candle open time). TradingView shows your chart timezone.")
+                st.dataframe(tl, width="stretch", hide_index=True)
         st.download_button("Download all results (CSV)", pd.DataFrame(rows).to_csv(index=False),
                            file_name="ifvg_backtest_results.csv", mime="text/csv")
         if st.session_state.get("bt_fails"):

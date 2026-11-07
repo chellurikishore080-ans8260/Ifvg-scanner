@@ -44,7 +44,7 @@ DEFAULT_PARAMS = dict(
     filter="Balanced", atr_len=14, sl_mult=1.5, max_hidden=120, max_age=60,
     entry_mode="Confirmation Close",      # Pine default is "IFVG Line"; close is the realistic fill
     line_mode="Broken Boundary",
-    capital=100_000.0, risk_pct=1.0, fee_side_pct=0.10, max_leverage=5.0,
+    capital=100_000.0, risk_pct=1.0, fee_side_pct=0.01, max_leverage=5.0,
 )
 
 
@@ -276,6 +276,24 @@ def backtest_df(df, rr_list, p):
         tr = simulate(signals, h, l, atr, rr, p)
         out[rr] = (stats(tr, p["capital"]), tr)
     return out, len(signals), filtered
+
+
+def trade_log(df, rr, p):
+    """Every simulated trade of one coin/timeframe with times (UTC), levels and result.
+    Use it to compare trade by trade with the TradingView indicator labels."""
+    o, h, l, c = (df[k].values for k in ("o", "h", "l", "c"))
+    atr = atr_rma(h, l, c, p["atr_len"])
+    signals, _ = gen_signals(o, h, l, c, atr, p)
+    rows = []
+    for t in simulate(signals, h, l, atr, rr, p):
+        d, e = t["dir"], t["entry"]
+        risk = atr[t["bar"]] * p["sl_mult"]
+        rows.append(dict(
+            signal_time=df["t"].iloc[t["bar"]], side="BUY" if d == 1 else "SELL", entry=e,
+            sl=e - d * risk, tp=e + d * risk * rr, exit_time=df["t"].iloc[t["exit_bar"]],
+            result="TP hit" if t["result"] == 1 else "SL hit", gross_pnl=round(t["gross"], 2),
+            fees=round(t["fees"], 2), net_pnl=round(t["net"], 2)))
+    return pd.DataFrame(rows)
 
 
 def latest_signals(df, p, lookback=3):

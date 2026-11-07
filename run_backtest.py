@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--entry-mode", default="Confirmation Close", choices=["Confirmation Close", "IFVG Line"])
     ap.add_argument("--capital", type=float, default=100_000)
     ap.add_argument("--risk-pct", type=float, default=1.0)
-    ap.add_argument("--fee-side-pct", type=float, default=0.10)
+    ap.add_argument("--fee-side-pct", type=float, default=0.01, help="fee per side in %%, charged on entry and exit")
     ap.add_argument("--max-leverage", type=float, default=5.0)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default="results")

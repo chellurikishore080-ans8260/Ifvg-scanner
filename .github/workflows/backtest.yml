@@ -12,6 +12,9 @@ on:
       filter_mode:
         description: "Balanced / Loose / Strict / Off"
         default: "Balanced"
+      fee_side_pct:
+        description: "Fee per side in % (entry and exit each)"
+        default: "0.01"
 
 permissions:
   contents: write
@@ -35,7 +38,8 @@ jobs:
           COINS: ${{ inputs.coins }}
           ENTRY: ${{ inputs.entry_mode }}
           FILTER: ${{ inputs.filter_mode }}
-        run: python run_backtest.py --coins "$COINS" --entry-mode "$ENTRY" --filter "$FILTER" --out results
+          FEE: ${{ inputs.fee_side_pct }}
+        run: python run_backtest.py --coins "$COINS" --entry-mode "$ENTRY" --filter "$FILTER" --fee-side-pct "$FEE" --out results
 
       - name: Upload results
         uses: actions/upload-artifact@v4

@@ -1,0 +1,1127 @@
+//@version=6
+// ─────────────────────────────────────────────
+// IFVG Sniper Entry Engine
+// Created & maintained by Kishore
+// Original script title credit retained below: [trade_w_samet]
+// Closed trades stay on the chart with a TP HIT / SL HIT result label,
+// dashboard shows win rate. Hit checks run on confirmed candles only.
+// ─────────────────────────────────────────────
+indicator("IFVG Sniper Entry Engine [trade_w_samet]", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ⚙️ 01. IFVG ENGINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupIFVG = "⚙️ 01. IFVG Engine"
+
+maxHiddenFVG = input.int(
+     120,
+     "🧠 Hidden FVG Memory",
+     minval=10,
+     maxval=500,
+     group=groupIFVG,
+     tooltip="Controls how many hidden FVG structures are stored internally before IFVG inversion is checked.",
+     display=display.none
+)
+
+maxFvgAge = input.int(
+     60,
+     "⏳ Max Hidden FVG Age",
+     minval=5,
+     maxval=500,
+     group=groupIFVG,
+     tooltip="Maximum bar age for hidden FVG structures before they expire.",
+     display=display.none
+)
+
+minGapTicks = input.int(
+     0,
+     "📏 Minimum FVG Size / Ticks",
+     minval=0,
+     group=groupIFVG,
+     tooltip="Minimum raw tick size required before a hidden FVG can be stored.",
+     display=display.none
+)
+
+maxVisibleIFVG = input.int(
+     20,
+     "📌 Max Visible IFVG",
+     minval=1,
+     maxval=100,
+     group=groupIFVG,
+     tooltip="Maximum number of visible IFVG lines kept on the chart.",
+     display=display.none
+)
+
+ifvgLengthBars = input.int(
+     50,
+     "↔️ IFVG Line Length Bars",
+     minval=5,
+     maxval=500,
+     group=groupIFVG,
+     tooltip="Controls how far IFVG lines extend to the right.",
+     display=display.none
+)
+
+linePriceMode = input.string(
+     "Broken Boundary",
+     "📍 IFVG Line Price",
+     options=["Broken Boundary", "Confirmation Close", "Midpoint"],
+     group=groupIFVG,
+     tooltip="Controls whether IFVG lines are drawn from the broken boundary, confirmation close, or midpoint.",
+     display=display.none
+)
+
+deleteInvalidIFVG = input.bool(
+     true,
+     "🧹 Delete Invalidated IFVG",
+     group=groupIFVG,
+     tooltip="Automatically deletes IFVG lines when price invalidates the structure.",
+     display=display.none
+)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 💎 02. IFVG FILTER
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupFilter = "💎 02. IFVG Filter"
+
+filterMode = input.string(
+     "Balanced",
+     "💎 IFVG Filter Mode",
+     options=["Off", "Loose", "Balanced", "Strict", "Custom"],
+     group=groupFilter,
+     tooltip="Controls how strict the IFVG quality filter should be.",
+     display=display.none
+)
+
+customMinGapAtr = input.float(
+     0.25,
+     "💎 Custom Minimum Gap / ATR",
+     minval=0.0,
+     step=0.05,
+     group=groupFilter,
+     tooltip="Custom minimum gap size measured against ATR. Used only in Custom mode.",
+     display=display.none
+)
+
+customMinBodyRatio = input.float(
+     0.50,
+     "💎 Custom Minimum Body Ratio",
+     minval=0.0,
+     maxval=1.0,
+     step=0.05,
+     group=groupFilter,
+     tooltip="Custom minimum candle body ratio. Used only in Custom mode.",
+     display=display.none
+)
+
+customMinRangeAtr = input.float(
+     0.60,
+     "💎 Custom Minimum Range / ATR",
+     minval=0.0,
+     step=0.05,
+     group=groupFilter,
+     tooltip="Custom minimum candle range measured against ATR. Used only in Custom mode.",
+     display=display.none
+)
+
+customBreakAtr = input.float(
+     0.05,
+     "💎 Custom Clean Break Buffer / ATR",
+     minval=0.0,
+     step=0.01,
+     group=groupFilter,
+     tooltip="Extra ATR buffer required for IFVG confirmation. Used only in Custom mode.",
+     display=display.none
+)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🎯 03. IFVG ENTRY MODEL
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupTrade = "🎯 03. IFVG Entry Model"
+
+entryMode = input.string(
+     "IFVG Line",
+     "🎯 Entry Price",
+     options=["IFVG Line", "Confirmation Close"],
+     group=groupTrade,
+     tooltip="IFVG Line uses the IFVG level as entry reference. Confirmation Close uses the close that confirmed the IFVG.",
+     display=display.none
+)
+
+atrLen = input.int(
+     14,
+     "📐 ATR Length",
+     minval=1,
+     group=groupTrade,
+     tooltip="ATR length used for the visual SL calculation.",
+     display=display.none
+)
+
+slAtrMult = input.float(
+     1.5,
+     "🛡️ SL ATR Multiplier",
+     minval=0.1,
+     step=0.1,
+     group=groupTrade,
+     tooltip="Controls how far the visual SL is placed from entry using ATR.",
+     display=display.none
+)
+
+tpRRInput = input.string(
+     "3R",
+     "🎯 Take Profit RR",
+     options=["1R", "2R", "3R", "4R", "5R", "6R"],
+     group=groupTrade,
+     tooltip="Selects the visual take-profit RR target.",
+     display=display.none
+)
+
+initialBoxLength = input.int(
+     5,
+     "📦 Initial TP / SL Box Length",
+     minval=1,
+     maxval=50,
+     group=groupTrade,
+     tooltip="Initial box extension length when a new IFVG trade model appears.",
+     display=display.none
+)
+
+keepClosedTrades = input.bool(
+     true,
+     "✅ Keep Closed Trades With Result Label",
+     group=groupTrade,
+     tooltip="When a trade hits TP or SL, keep its box on the chart and print the result next to it (TP hit / SL hit). Turn off to delete closed trades like before.",
+     display=display.none
+)
+
+maxClosedTrades = input.int(
+     10,
+     "🗂️ Max Closed Trades Shown",
+     minval=1,
+     maxval=40,
+     group=groupTrade,
+     tooltip="How many past trades stay on the chart. Older ones are removed first.",
+     display=display.none
+)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🎨 04. VISUAL STYLE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupStyle = "🎨 04. Visual Style"
+
+themePackage = input.string(
+     "Obsidian Sniper",
+     "🎨 Theme Package",
+     options=["Obsidian Sniper", "Ice Blue", "Royal Gold"],
+     group=groupStyle,
+     tooltip="Applies one of three premium color packages to IFVG lines, trade boxes, trade levels, and dashboard colors.",
+     display=display.none
+)
+
+useThemePackage = input.bool(
+     true,
+     "🎨 Use Theme Package Colors",
+     group=groupStyle,
+     tooltip="When enabled, colors are controlled by the selected theme package. Disable it to use custom colors.",
+     display=display.none
+)
+
+customBullIFVGColor = input.color(
+     color.rgb(0, 120, 255),
+     "🟦 Custom Bullish IFVG Color",
+     group=groupStyle,
+     tooltip="Custom bullish IFVG color. Used only when Theme Package Colors is disabled.",
+     display=display.none
+)
+
+customBearIFVGColor = input.color(
+     color.rgb(255, 60, 70),
+     "🟥 Custom Bearish IFVG Color",
+     group=groupStyle,
+     tooltip="Custom bearish IFVG color. Used only when Theme Package Colors is disabled.",
+     display=display.none
+)
+
+ifvgLabelSizeInput = input.string(
+     "Large",
+     "🏷️ IFVG Label Size",
+     options=["Tiny", "Small", "Normal", "Large", "Huge"],
+     group=groupStyle,
+     tooltip="Controls IFVG+ and IFVG- label size.",
+     display=display.none
+)
+
+customEntryColor = input.color(
+     color.white,
+     "⚪ Custom Entry Line Color",
+     group=groupStyle,
+     tooltip="Custom ENTRY line color. Used only when Theme Package Colors is disabled.",
+     display=display.none
+)
+
+customSLColor = input.color(
+     color.rgb(220, 50, 50),
+     "🛑 Custom SL Color",
+     group=groupStyle,
+     tooltip="Custom SL line and box color. Used only when Theme Package Colors is disabled.",
+     display=display.none
+)
+
+customTPColor = input.color(
+     color.rgb(0, 190, 110),
+     "🎯 Custom TP Color",
+     group=groupStyle,
+     tooltip="Custom TP line and box color. Used only when Theme Package Colors is disabled.",
+     display=display.none
+)
+
+customDashboardBg = input.color(
+     color.rgb(12, 12, 16),
+     "📟 Custom Dashboard Background",
+     group=groupStyle,
+     tooltip="Custom dashboard background color. Used only when Theme Package Colors is disabled.",
+     display=display.none
+)
+
+customDashboardText = input.color(
+     color.white,
+     "📟 Custom Dashboard Text",
+     group=groupStyle,
+     tooltip="Custom dashboard text color. Used only when Theme Package Colors is disabled.",
+     display=display.none
+)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 📟 05. DASHBOARD
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupDashboard = "📟 05. Dashboard"
+
+showDashboard = input.bool(
+     true,
+     "📟 Show Dashboard",
+     group=groupDashboard,
+     tooltip="Shows or hides the IFVG Sniper dashboard.",
+     display=display.none
+)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// THEME ENGINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+f_themeBullIFVG() =>
+    themePackage == "Ice Blue" ? color.rgb(0, 180, 255) :
+     themePackage == "Royal Gold" ? color.rgb(212, 175, 55) :
+     color.rgb(0, 120, 255)
+
+f_themeBearIFVG() =>
+    themePackage == "Ice Blue" ? color.rgb(255, 80, 120) :
+     themePackage == "Royal Gold" ? color.rgb(210, 45, 65) :
+     color.rgb(255, 60, 70)
+
+f_themeEntry() =>
+    themePackage == "Ice Blue" ? color.rgb(235, 250, 255) :
+     themePackage == "Royal Gold" ? color.rgb(255, 245, 210) :
+     color.white
+
+f_themeSL() =>
+    themePackage == "Ice Blue" ? color.rgb(255, 70, 115) :
+     themePackage == "Royal Gold" ? color.rgb(210, 45, 65) :
+     color.rgb(220, 50, 50)
+
+f_themeTP() =>
+    themePackage == "Ice Blue" ? color.rgb(0, 220, 255) :
+     themePackage == "Royal Gold" ? color.rgb(212, 175, 55) :
+     color.rgb(0, 190, 110)
+
+f_themeDashboardBg() =>
+    themePackage == "Ice Blue" ? color.rgb(8, 20, 32) :
+     themePackage == "Royal Gold" ? color.rgb(20, 15, 8) :
+     color.rgb(12, 12, 16)
+
+f_themeDashboardText() =>
+    themePackage == "Ice Blue" ? color.rgb(230, 248, 255) :
+     themePackage == "Royal Gold" ? color.rgb(255, 245, 215) :
+     color.white
+
+bullIFVGColor = useThemePackage ? f_themeBullIFVG() : customBullIFVGColor
+bearIFVGColor = useThemePackage ? f_themeBearIFVG() : customBearIFVGColor
+
+entryColor = useThemePackage ? f_themeEntry() : customEntryColor
+slColor = useThemePackage ? f_themeSL() : customSLColor
+tpColor = useThemePackage ? f_themeTP() : customTPColor
+
+dashboardBg = useThemePackage ? f_themeDashboardBg() : customDashboardBg
+dashboardText = useThemePackage ? f_themeDashboardText() : customDashboardText
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CORE VALUES
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+atrValue = ta.atr(atrLen)
+safeAtr = na(atrValue) or atrValue <= 0.0 ? syminfo.mintick : atrValue
+
+tpRR =
+     tpRRInput == "1R" ? 1.0 :
+     tpRRInput == "2R" ? 2.0 :
+     tpRRInput == "3R" ? 3.0 :
+     tpRRInput == "4R" ? 4.0 :
+     tpRRInput == "5R" ? 5.0 :
+     6.0
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FILTER HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+f_minGapAtr() =>
+    filterMode == "Off" ? 0.0 :
+     filterMode == "Loose" ? 0.15 :
+     filterMode == "Balanced" ? 0.25 :
+     filterMode == "Strict" ? 0.40 :
+     customMinGapAtr
+
+f_minBodyRatio() =>
+    filterMode == "Off" ? 0.0 :
+     filterMode == "Loose" ? 0.40 :
+     filterMode == "Balanced" ? 0.50 :
+     filterMode == "Strict" ? 0.60 :
+     customMinBodyRatio
+
+f_minRangeAtr() =>
+    filterMode == "Off" ? 0.0 :
+     filterMode == "Loose" ? 0.40 :
+     filterMode == "Balanced" ? 0.60 :
+     filterMode == "Strict" ? 0.85 :
+     customMinRangeAtr
+
+f_breakBufferAtr() =>
+    filterMode == "Off" ? 0.0 :
+     filterMode == "Loose" ? 0.00 :
+     filterMode == "Balanced" ? 0.05 :
+     filterMode == "Strict" ? 0.10 :
+     customBreakAtr
+
+f_qualityPass(float _gapAtr, float _bodyRatio, float _rangeAtr) =>
+    filterMode == "Off" or (
+         _gapAtr >= f_minGapAtr() and
+         _bodyRatio >= f_minBodyRatio() and
+         _rangeAtr >= f_minRangeAtr()
+    )
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GENERAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+f_priceText(float _price) =>
+    na(_price) ? "-" : str.tostring(_price, format.mintick)
+
+f_linePrice(float _top, float _bot, float _confirmClose, int _dir) =>
+    float price = na
+
+    if linePriceMode == "Confirmation Close"
+        price := _confirmClose
+    else if linePriceMode == "Midpoint"
+        price := (_top + _bot) / 2.0
+    else
+        price := _dir == 1 ? _top : _bot
+
+    price
+
+f_ifvgLabelSize() =>
+    ifvgLabelSizeInput == "Tiny" ? size.tiny :
+     ifvgLabelSizeInput == "Small" ? size.small :
+     ifvgLabelSizeInput == "Normal" ? size.normal :
+     ifvgLabelSizeInput == "Large" ? size.large :
+     size.huge
+
+f_statusText(int _status) =>
+    _status == 1 ? "ACTIVE" :
+     _status == 2 ? "TP HIT" :
+     _status == -1 ? "SL HIT" :
+     "WAITING"
+
+f_statusColor(int _status) =>
+    _status == -1 ? color.new(slColor, 0) :
+     _status == 2 ? color.new(tpColor, 0) :
+     _status == 1 ? color.new(color.orange, 15) :
+     color.new(color.gray, 35)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// HIDDEN FVG MEMORY
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var array<float> rawTops = array.new_float()
+var array<float> rawBots = array.new_float()
+var array<int> rawDirs = array.new_int()
+var array<int> rawAges = array.new_int()
+
+var array<float> rawGapAtr = array.new_float()
+var array<float> rawBodyRatio = array.new_float()
+var array<float> rawRangeAtr = array.new_float()
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// VISIBLE IFVG OBJECTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var array<line> ifvgLines = array.new_line()
+var array<label> ifvgLabels = array.new_label()
+
+var array<float> ifvgTops = array.new_float()
+var array<float> ifvgBots = array.new_float()
+var array<int> ifvgDirs = array.new_int()
+
+f_deleteVisibleIFVG(int _idx) =>
+    line ln = array.get(ifvgLines, _idx)
+    label lb = array.get(ifvgLabels, _idx)
+
+    line.delete(ln)
+
+    if not na(lb)
+        label.delete(lb)
+
+    array.remove(ifvgLines, _idx)
+    array.remove(ifvgLabels, _idx)
+    array.remove(ifvgTops, _idx)
+    array.remove(ifvgBots, _idx)
+    array.remove(ifvgDirs, _idx)
+
+f_addVisibleIFVG(int _bar, float _top, float _bot, float _confirmClose, int _dir) =>
+    color c = _dir == 1 ? bullIFVGColor : bearIFVGColor
+    float linePrice = f_linePrice(_top, _bot, _confirmClose, _dir)
+
+    string labelText = _dir == 1 ? "IFVG+" : "IFVG-"
+
+    string tooltip =
+         "IFVG Sniper Entry Engine\n" +
+         "Direction: " + (_dir == 1 ? "Bullish IFVG+" : "Bearish IFVG-") + "\n" +
+         "Filter Mode: " + filterMode + "\n" +
+         "Top: " + str.tostring(_top, format.mintick) + "\n" +
+         "Bottom: " + str.tostring(_bot, format.mintick) + "\n" +
+         "Line Price: " + str.tostring(linePrice, format.mintick)
+
+    line ln = line.new(
+         x1=_bar,
+         y1=linePrice,
+         x2=_bar + ifvgLengthBars,
+         y2=linePrice,
+         xloc=xloc.bar_index,
+         extend=extend.none,
+         color=c,
+         width=1
+    )
+
+    label lb = label.new(
+         x=_bar + ifvgLengthBars,
+         y=linePrice,
+         text=labelText,
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_left,
+         color=color.new(c, 0),
+         textcolor=color.white,
+         size=f_ifvgLabelSize(),
+         tooltip=tooltip
+    )
+
+    array.push(ifvgLines, ln)
+    array.push(ifvgLabels, lb)
+
+    array.push(ifvgTops, _top)
+    array.push(ifvgBots, _bot)
+    array.push(ifvgDirs, _dir)
+
+    while array.size(ifvgLines) > maxVisibleIFVG
+        f_deleteVisibleIFVG(0)
+
+    linePrice
+
+f_updateIFVGInvalidation() =>
+    if deleteInvalidIFVG and barstate.isconfirmed and array.size(ifvgLines) > 0
+        int count = array.size(ifvgLines)
+
+        for j = 0 to count - 1
+            int i = count - 1 - j
+
+            if i >= 0 and i < array.size(ifvgLines)
+                float top = array.get(ifvgTops, i)
+                float bot = array.get(ifvgBots, i)
+                int dir = array.get(ifvgDirs, i)
+
+                bool invalidBull = dir == 1 and close < bot
+                bool invalidBear = dir == -1 and close > top
+
+                if invalidBull or invalidBear
+                    f_deleteVisibleIFVG(i)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ACTIVE TRADE OBJECTS ONLY
+// Past TP/SL boxes are not shown.
+// Trade objects are deleted after TP or SL.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var array<box> tradeBoxes = array.new_box()
+var array<line> tradeLines = array.new_line()
+var array<label> tradeLabels = array.new_label()
+
+f_clearActiveTradeObjects() =>
+    while array.size(tradeBoxes) > 0
+        box bx = array.shift(tradeBoxes)
+        box.delete(bx)
+
+    while array.size(tradeLines) > 0
+        line ln = array.shift(tradeLines)
+        line.delete(ln)
+
+    while array.size(tradeLabels) > 0
+        label lb = array.shift(tradeLabels)
+        label.delete(lb)
+
+f_drawActiveTradeObjects(int _bar, float _entry, float _sl, float _tp) =>
+    f_clearActiveTradeObjects()
+
+    int rightBar = _bar + initialBoxLength
+
+    float tpTop = math.max(_entry, _tp)
+    float tpBot = math.min(_entry, _tp)
+
+    float slTop = math.max(_entry, _sl)
+    float slBot = math.min(_entry, _sl)
+
+    box tpBox = box.new(
+         left=_bar,
+         top=tpTop,
+         right=rightBar,
+         bottom=tpBot,
+         xloc=xloc.bar_index,
+         bgcolor=color.new(tpColor, 82),
+         border_color=color.new(tpColor, 0),
+         border_width=1
+    )
+
+    box slBox = box.new(
+         left=_bar,
+         top=slTop,
+         right=rightBar,
+         bottom=slBot,
+         xloc=xloc.bar_index,
+         bgcolor=color.new(slColor, 82),
+         border_color=color.new(slColor, 0),
+         border_width=1
+    )
+
+    line entryLine = line.new(
+         x1=_bar,
+         y1=_entry,
+         x2=rightBar,
+         y2=_entry,
+         xloc=xloc.bar_index,
+         color=entryColor,
+         width=2
+    )
+
+    line slLine = line.new(
+         x1=_bar,
+         y1=_sl,
+         x2=rightBar,
+         y2=_sl,
+         xloc=xloc.bar_index,
+         color=slColor,
+         width=2
+    )
+
+    line tpLine = line.new(
+         x1=_bar,
+         y1=_tp,
+         x2=rightBar,
+         y2=_tp,
+         xloc=xloc.bar_index,
+         color=tpColor,
+         width=2
+    )
+
+    label entryLabel = label.new(
+         x=rightBar,
+         y=_entry,
+         text="ENTRY",
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_left,
+         color=entryColor,
+         textcolor=color.black,
+         size=size.small
+    )
+
+    label slLabel = label.new(
+         x=rightBar,
+         y=_sl,
+         text="SL",
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_left,
+         color=slColor,
+         textcolor=color.white,
+         size=size.small
+    )
+
+    label tpLabel = label.new(
+         x=rightBar,
+         y=_tp,
+         text="TP " + tpRRInput,
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_left,
+         color=tpColor,
+         textcolor=color.white,
+         size=size.small
+    )
+
+    array.push(tradeBoxes, tpBox)
+    array.push(tradeBoxes, slBox)
+
+    array.push(tradeLines, entryLine)
+    array.push(tradeLines, slLine)
+    array.push(tradeLines, tpLine)
+
+    array.push(tradeLabels, entryLabel)
+    array.push(tradeLabels, slLabel)
+    array.push(tradeLabels, tpLabel)
+
+f_updateActiveTradeRight(int _right) =>
+    if array.size(tradeBoxes) >= 2 and array.size(tradeLines) >= 3 and array.size(tradeLabels) >= 3
+        box tpBox = array.get(tradeBoxes, 0)
+        box slBox = array.get(tradeBoxes, 1)
+
+        line entryLine = array.get(tradeLines, 0)
+        line slLine = array.get(tradeLines, 1)
+        line tpLine = array.get(tradeLines, 2)
+
+        label entryLabel = array.get(tradeLabels, 0)
+        label slLabel = array.get(tradeLabels, 1)
+        label tpLabel = array.get(tradeLabels, 2)
+
+        box.set_right(tpBox, _right)
+        box.set_right(slBox, _right)
+
+        line.set_x2(entryLine, _right)
+        line.set_x2(slLine, _right)
+        line.set_x2(tpLine, _right)
+
+        label.set_x(entryLabel, _right)
+        label.set_x(slLabel, _right)
+        label.set_x(tpLabel, _right)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CLOSED TRADES (kept on chart with result label)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var array<box> closedBoxes = array.new_box()
+var array<line> closedLines = array.new_line()
+var array<label> closedLabels = array.new_label()
+
+f_trimClosedTrades() =>
+    while array.size(closedBoxes) > maxClosedTrades * 2
+        box.delete(array.shift(closedBoxes))
+
+    while array.size(closedLines) > maxClosedTrades * 3
+        line.delete(array.shift(closedLines))
+
+    while array.size(closedLabels) > maxClosedTrades
+        label.delete(array.shift(closedLabels))
+
+// Called once when TP or SL is hit.
+// Keeps the trade box, ends it on the exit candle and prints the result next to it.
+f_finishActiveTrade(int _exitBar, bool _win, float _resultPrice) =>
+    if not keepClosedTrades or array.size(tradeBoxes) < 2 or array.size(tradeLines) < 3
+        f_clearActiveTradeObjects()
+    else
+        while array.size(tradeBoxes) > 0
+            box bx = array.shift(tradeBoxes)
+            box.set_right(bx, _exitBar)
+            array.push(closedBoxes, bx)
+
+        while array.size(tradeLines) > 0
+            line ln = array.shift(tradeLines)
+            line.set_x2(ln, _exitBar)
+            array.push(closedLines, ln)
+
+        // ENTRY / SL / TP text labels are removed, one result label replaces them.
+        while array.size(tradeLabels) > 0
+            label old = array.shift(tradeLabels)
+            label.delete(old)
+
+        string resultText = _win ? "✅ TP HIT +" + tpRRInput : "❌ SL HIT -1R"
+        color resultColor = _win ? tpColor : slColor
+
+        label resultLabel = label.new(
+             x=_exitBar,
+             y=_resultPrice,
+             text=resultText,
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_label_left,
+             color=color.new(resultColor, 0),
+             textcolor=color.white,
+             size=size.normal
+        )
+
+        array.push(closedLabels, resultLabel)
+        f_trimClosedTrades()
+
+    true
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRADE STATE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var int lastSignalDir = 0
+var int lastSignalBar = na
+
+var float lastEntry = na
+var float lastSL = na
+var float lastTP = na
+
+var string lastSignalSide = "-"
+var int currentTradeStatus = 0
+var bool tradeActive = false
+
+var int totalSignals = 0
+var int totalWins = 0
+var int totalLosses = 0
+var int blockedSignals = 0
+var int filteredIFVG = 0
+
+bool newBullEntry = false
+bool newBearEntry = false
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CORE IFVG ENGINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bool newBullIFVG = false
+bool newBearIFVG = false
+
+float newTop = na
+float newBot = na
+float newConfirmClose = na
+int newDir = 0
+
+if barstate.isconfirmed
+    newBullEntry := false
+    newBearEntry := false
+
+    // Hidden FVG age update.
+    if array.size(rawAges) > 0
+        int ageCount = array.size(rawAges)
+
+        for i = 0 to ageCount - 1
+            array.set(rawAges, i, array.get(rawAges, i) + 1)
+
+    // Remove expired hidden FVGs.
+    if array.size(rawAges) > 0
+        int removeCount = array.size(rawAges)
+
+        for j = 0 to removeCount - 1
+            int i = removeCount - 1 - j
+
+            if i >= 0 and i < array.size(rawAges)
+                if array.get(rawAges, i) > maxFvgAge
+                    array.remove(rawTops, i)
+                    array.remove(rawBots, i)
+                    array.remove(rawDirs, i)
+                    array.remove(rawAges, i)
+                    array.remove(rawGapAtr, i)
+                    array.remove(rawBodyRatio, i)
+                    array.remove(rawRangeAtr, i)
+
+    float minGap = minGapTicks * syminfo.mintick
+
+    float candleRange = math.max(high - low, syminfo.mintick)
+    float candleBody = math.abs(close - open)
+    float bodyRatio = candleBody / candleRange
+    float rangeAtrRatio = candleRange / safeAtr
+
+    bool rawBullFVG = not na(high[2]) and low > high[2] and (low - high[2]) >= minGap
+    bool rawBearFVG = not na(low[2]) and high < low[2] and (low[2] - high) >= minGap
+
+    if rawBullFVG
+        float gapAtr = (low - high[2]) / safeAtr
+
+        array.push(rawTops, low)
+        array.push(rawBots, high[2])
+        array.push(rawDirs, 1)
+        array.push(rawAges, 0)
+
+        array.push(rawGapAtr, gapAtr)
+        array.push(rawBodyRatio, bodyRatio)
+        array.push(rawRangeAtr, rangeAtrRatio)
+
+    if rawBearFVG
+        float gapAtr = (low[2] - high) / safeAtr
+
+        array.push(rawTops, low[2])
+        array.push(rawBots, high)
+        array.push(rawDirs, -1)
+        array.push(rawAges, 0)
+
+        array.push(rawGapAtr, gapAtr)
+        array.push(rawBodyRatio, bodyRatio)
+        array.push(rawRangeAtr, rangeAtrRatio)
+
+    while array.size(rawTops) > maxHiddenFVG
+        array.shift(rawTops)
+        array.shift(rawBots)
+        array.shift(rawDirs)
+        array.shift(rawAges)
+        array.shift(rawGapAtr)
+        array.shift(rawBodyRatio)
+        array.shift(rawRangeAtr)
+
+    // Detect IFVG inversion with filter.
+    if array.size(rawTops) > 0
+        int invCount = array.size(rawTops)
+
+        for j = 0 to invCount - 1
+            int i = invCount - 1 - j
+
+            if i >= 0 and i < array.size(rawTops)
+                float top = array.get(rawTops, i)
+                float bot = array.get(rawBots, i)
+                int dir = array.get(rawDirs, i)
+
+                float gapAtrStored = array.get(rawGapAtr, i)
+                float bodyRatioStored = array.get(rawBodyRatio, i)
+                float rangeAtrStored = array.get(rawRangeAtr, i)
+
+                float cleanBreakBuffer = safeAtr * f_breakBufferAtr()
+
+                bool bullishInversion = dir == -1 and close > top + cleanBreakBuffer
+                bool bearishInversion = dir == 1 and close < bot - cleanBreakBuffer
+
+                if bullishInversion or bearishInversion
+                    bool passFilter = f_qualityPass(gapAtrStored, bodyRatioStored, rangeAtrStored)
+
+                    if passFilter
+                        newBullIFVG := bullishInversion
+                        newBearIFVG := bearishInversion
+
+                        newTop := top
+                        newBot := bot
+                        newConfirmClose := close
+                        newDir := bullishInversion ? 1 : -1
+                    else
+                        filteredIFVG += 1
+
+                    array.remove(rawTops, i)
+                    array.remove(rawBots, i)
+                    array.remove(rawDirs, i)
+                    array.remove(rawAges, i)
+                    array.remove(rawGapAtr, i)
+                    array.remove(rawBodyRatio, i)
+                    array.remove(rawRangeAtr, i)
+
+                    break
+
+    // Only filtered IFVGs appear.
+    if newBullIFVG or newBearIFVG
+        float ifvgLinePrice = f_addVisibleIFVG(bar_index, newTop, newBot, newConfirmClose, newDir)
+
+        if not tradeActive
+            float entryPrice = entryMode == "Confirmation Close" ? newConfirmClose : ifvgLinePrice
+            float risk = atrValue * slAtrMult
+
+            float sl = newDir == 1 ? entryPrice - risk : entryPrice + risk
+            float tp = newDir == 1 ? entryPrice + risk * tpRR : entryPrice - risk * tpRR
+
+            f_drawActiveTradeObjects(bar_index, entryPrice, sl, tp)
+
+            lastSignalDir := newDir
+            lastSignalBar := bar_index
+
+            lastEntry := entryPrice
+            lastSL := sl
+            lastTP := tp
+
+            lastSignalSide := newDir == 1 ? "Bullish" : "Bearish"
+            currentTradeStatus := 1
+            tradeActive := true
+
+            newBullEntry := newDir == 1
+            newBearEntry := newDir == -1
+
+            totalSignals += 1
+        else
+            blockedSignals += 1
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ACTIVE TRADE BOX EXTENSION
+// Only active trade box is visible.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if tradeActive and not na(lastSignalBar)
+    int liveRight = math.max(bar_index, lastSignalBar + initialBoxLength)
+
+    f_updateActiveTradeRight(liveRight)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// IFVG INVALIDATION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+f_updateIFVGInvalidation()
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRADE STATUS UPDATE
+// Checked on confirmed candles only (same as the engine and the backtest).
+// TP/SL hit keeps the trade box and prints the result next to it
+// (or deletes it if "Keep Closed Trades" is off).
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if barstate.isconfirmed and tradeActive and not na(lastEntry) and not na(lastSignalBar) and bar_index > lastSignalBar
+    bool hitSL = lastSignalDir == 1 ? low <= lastSL : high >= lastSL
+    bool hitTP = lastSignalDir == 1 ? high >= lastTP : low <= lastTP
+
+    // Conservative priority:
+    // If TP and SL are touched in the same candle, SL is counted first.
+    if hitSL
+        currentTradeStatus := -1
+        tradeActive := false
+        totalLosses += 1
+
+        f_finishActiveTrade(bar_index, false, lastSL)
+
+    else if hitTP
+        currentTradeStatus := 2
+        tradeActive := false
+        totalWins += 1
+
+        f_finishActiveTrade(bar_index, true, lastTP)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ALERTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+alertcondition(
+     newBullEntry,
+     title="IFVG Sniper Bullish Entry",
+     message="IFVG Sniper Entry Engine | Bullish IFVG Entry confirmed on {{ticker}} / {{interval}}"
+)
+
+alertcondition(
+     newBearEntry,
+     title="IFVG Sniper Bearish Entry",
+     message="IFVG Sniper Entry Engine | Bearish IFVG Entry confirmed on {{ticker}} / {{interval}}"
+)
+
+alertcondition(
+     newBullIFVG,
+     title="IFVG Sniper Bullish IFVG+",
+     message="IFVG Sniper Entry Engine | Bullish IFVG+ formed on {{ticker}} / {{interval}}"
+)
+
+alertcondition(
+     newBearIFVG,
+     title="IFVG Sniper Bearish IFVG-",
+     message="IFVG Sniper Entry Engine | Bearish IFVG- formed on {{ticker}} / {{interval}}"
+)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DASHBOARD
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var table dash = table.new(position.top_right, 2, 13, border_width=1)
+
+if showDashboard and barstate.islast
+    float wr = totalWins + totalLosses > 0 ? totalWins * 100.0 / (totalWins + totalLosses) : na
+
+    table.cell(dash, 0, 0, "IFVG SNIPER", bgcolor=dashboardBg, text_color=dashboardText, text_size=size.small)
+    table.cell(dash, 1, 0, "ENGINE", bgcolor=dashboardBg, text_color=dashboardText, text_size=size.small)
+
+    table.cell(dash, 0, 1, "Filter", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 1, filterMode, bgcolor=color.new(dashboardBg, 25), text_color=dashboardText, text_size=size.tiny)
+
+    table.cell(dash, 0, 2, "Label Size", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 2, ifvgLabelSizeInput, bgcolor=color.new(dashboardBg, 25), text_color=dashboardText, text_size=size.tiny)
+
+    table.cell(dash, 0, 3, "Last Signal", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(
+         dash,
+         1,
+         3,
+         lastSignalSide,
+         bgcolor=lastSignalDir == 1 ? color.new(bullIFVGColor, 20) : lastSignalDir == -1 ? color.new(bearIFVGColor, 20) : color.new(color.gray, 35),
+         text_color=color.white,
+         text_size=size.tiny
+    )
+
+    table.cell(dash, 0, 4, "Trade Status", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 4, f_statusText(currentTradeStatus), bgcolor=f_statusColor(currentTradeStatus), text_color=color.white, text_size=size.tiny)
+
+    table.cell(dash, 0, 5, "Selected RR", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 5, tpRRInput, bgcolor=color.new(dashboardBg, 25), text_color=dashboardText, text_size=size.tiny)
+
+    table.cell(dash, 0, 6, "Entry", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 6, f_priceText(lastEntry), bgcolor=color.new(dashboardBg, 25), text_color=dashboardText, text_size=size.tiny)
+
+    table.cell(dash, 0, 7, "SL", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 7, f_priceText(lastSL), bgcolor=color.new(slColor, 70), text_color=color.white, text_size=size.tiny)
+
+    table.cell(dash, 0, 8, "TP", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 8, f_priceText(lastTP), bgcolor=color.new(tpColor, 65), text_color=color.white, text_size=size.tiny)
+
+    table.cell(dash, 0, 9, "Active Box", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(
+         dash,
+         1,
+         9,
+         tradeActive ? "VISIBLE" : "HIDDEN",
+         bgcolor=tradeActive ? color.new(tpColor, 65) : color.new(color.gray, 35),
+         text_color=color.white,
+         text_size=size.tiny
+    )
+
+    table.cell(dash, 0, 10, "Filtered IFVG", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(dash, 1, 10, str.tostring(filteredIFVG), bgcolor=color.new(color.gray, 35), text_color=color.white, text_size=size.tiny)
+
+    table.cell(dash, 0, 11, "Trades / W / L", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(
+         dash,
+         1,
+         11,
+         str.tostring(totalSignals) + " / " + str.tostring(totalWins) + " / " + str.tostring(totalLosses),
+         bgcolor=color.new(dashboardBg, 25),
+         text_color=dashboardText,
+         text_size=size.tiny
+    )
+
+    table.cell(dash, 0, 12, "Win Rate", bgcolor=color.new(dashboardBg, 0), text_color=dashboardText, text_size=size.tiny)
+    table.cell(
+         dash,
+         1,
+         12,
+         na(wr) ? "-" : str.tostring(wr, "#.0") + "%",
+         bgcolor=na(wr) ? color.new(color.gray, 35) : wr >= 50 ? color.new(tpColor, 65) : color.new(slColor, 70),
+         text_color=color.white,
+         text_size=size.tiny
+    )
