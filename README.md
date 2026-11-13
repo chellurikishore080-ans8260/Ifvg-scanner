@@ -10,12 +10,20 @@ Python port of the "IFVG Sniper Entry Engine" Pine v6 indicator. Tests the top v
 |---|---|
 | `app.py` | Streamlit app: Backtest tab and Live scanner tab |
 | `ifvg_engine.py` | Strategy engine and Binance data loader |
+| `charts.py` | Signal chart (entry / SL / TP lines and zones) |
 | `run_backtest.py` | Headless backtest, writes `results/` |
 | `.github/workflows/backtest.yml` | Run the backtest on GitHub from your phone |
 
 ## Streamlit
 
 Main file: `app.py`. Requirements: `requirements.txt`.
+
+## Live scanner
+
+- **Auto-scan**: with the toggle on, the page checks every 15 seconds and scans again 3 seconds after a candle closes on the smallest selected timeframe. New OPEN signals pop up as a toast. It only runs while the page is open.
+- **Signal chart**: pick a signal to see candles with ENTRY, SL and TP lines, the profit zone (green) and loss zone (red), and where the trade ended if TP or SL was already touched. Times are IST.
+- **Status**: OPEN (SL and TP not touched yet), TP hit, SL hit, or BLOCKED (another trade of that coin/timeframe was still open, so the backtest would skip it). Same one-trade-at-a-time rule as the backtest.
+- **Fee (R)** column and the line under the chart show the real result after fees, e.g. TP = +1.9R instead of +2R.
 
 ## Backtest on GitHub (no PC)
 
@@ -25,7 +33,7 @@ Actions tab -> IFVG Backtest -> Run workflow. Results land in `results/summary.m
 
 - Each coin starts with 1,00,000. Risk per trade = 1% (1,000), fixed, no compounding.
 - Position size = risk / (SL distance %), capped at 5x capital.
-- Fee 0.01% per side on position size, charged on entry and exit (0.02% round trip). Change it in the sidebar, or `--fee-side-pct` / the workflow input.
+- Fee 0.1% per side (= 0.001, the Binance spot fee) on position size, charged on entry and exit (0.2% round trip). Change it in the sidebar, or `--fee-side-pct` / the workflow input. Note the box is in percent: 0.1 means 0.001.
 - Gross = +RR x risk on a win, -1 x risk on a loss. Net = gross - fees.
 - One trade at a time per coin. If TP and SL are hit in the same candle, SL counts first.
 

@@ -5,12 +5,14 @@ Created & maintained by Kishore
 Run:  pip install -r requirements.txt
       streamlit run app.py
 """
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
 
 import ifvg_engine as E
+from charts import build_signal_chart, fmt_price, to_ist
 
 st.set_page_config(page_title="IFVG Sniper", layout="wide")
 st.title("IFVG Sniper - Backtest & Live Scanner")
@@ -41,9 +43,10 @@ with st.sidebar:
     st.header("Capital / costs")
     capital = st.number_input("Capital per coin (1 lakh = 100000)", 1000.0, 100_000_000.0, 100_000.0, 1000.0)
     risk_pct = st.number_input("Risk per trade (% of capital)", 0.1, 10.0, 1.0, 0.1)
-    fee_side = st.number_input("Fee per side (%)", 0.0, 1.0, 0.01, 0.005, format="%.3f",
-                               help="0.01% per side by default, charged on entry and exit (0.02% round trip). "
-                                    "Set 0 to see the pure strategy result.")
+    fee_side = st.number_input("Fee per side (%)", 0.0, 1.0, 0.1, 0.005, format="%.3f",
+                               help="Binance spot fee = 0.1% per side = 0.001 as a fraction. Charged on entry and exit "
+                                    "(0.2% round trip). Set 0 to see the pure strategy result.")
+    st.caption(f"Fee = {fee_side:.3f}% per side = {fee_side / 100:.5f} as a fraction (Binance spot: 0.1% = 0.001)")
     max_lev = st.number_input("Max leverage (position cap)", 1.0, 50.0, 5.0, 1.0)
 
 params = dict(E.DEFAULT_PARAMS, filter=flt, entry_mode=entry_mode, sl_mult=sl_mult, atr_len=int(atr_len),
@@ -160,63 +163,146 @@ with tab_bt:
 
 
 # ───────────────────────── LIVE SCANNER ─────────────────────────
+LIVE_STATUS = ["OPEN", "TP hit", "SL hit", "BLOCKED"]
+STATUS_HELP = ("OPEN = entry taken, SL and TP not touched yet. TP hit / SL hit = trade already finished after the signal. "
+               "BLOCKED = another trade of the same coin and timeframe was still open, so the backtest would skip it.")
+
+
+def newest_boundary(tfs, now):
+    """Unix time of the most recent candle close among the selected timeframes (Binance candles align to the epoch)."""
+    return max(int(now // (E.TF_MINUTES[tf] * 60)) * E.TF_MINUTES[tf] * 60 for tf in tfs)
+
+
+def run_scan(n_coins, tfs, lookback, rr, prm):
+    symbols = cached_symbols(n_coins)
+    tasks = [(s, tf) for s in symbols for tf in tfs]
+    found, dfs, errs = [], {}, 0
+    prog = st.progress(0.0, text="Scanning...")
+
+    def scan(task):
+        sym, tf = task
+        try:
+            df = E.fetch_klines(sym, tf, 400)
+            if df is None or len(df) < 100:
+                return [], None
+            sigs = E.live_signals(df, prm, rr, lookback)
+            rows = []
+            for s in sigs:
+                rows.append(dict(s, coin=sym[:-4], tf=tf, side="BUY" if s["dir"] == 1 else "SELL",
+                                 ago=len(df) - 1 - s["bar"], last_close=df["c"].iloc[-1]))
+            return rows, (df if rows else None)
+        except Exception:
+            return None, None
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for task, (rows, df) in zip(tasks, pool.map(scan, tasks)):
+            done += 1
+            prog.progress(done / len(tasks), text=f"{done}/{len(tasks)}  {task[0]} {task[1]}")
+            if rows is None:
+                errs += 1
+                continue
+            found.extend(rows)
+            if df is not None:
+                dfs[(task[0][:-4], task[1])] = df
+    prog.empty()
+    return found, dfs, errs, len(tasks)
+
+
+def live_panel():
+    ss = st.session_state
+    tfs, n_coins, lookback, rr = ss["lt"], ss["lc"], ss["ln"], ss["lrr"]
+    auto = ss["live_auto"]
+    if not tfs:
+        st.warning("Select at least one timeframe.")
+        return
+
+    now = time.time()
+    sig = repr((n_coins, tuple(tfs), lookback, rr, sorted(params.items())))
+    last_ts = ss.get("live_ts")
+    due = False
+    if auto:
+        nb = newest_boundary(tfs, now)
+        due = last_ts is None or ss.get("live_sig") != sig or (nb > last_ts and now >= nb + 3)
+
+    clicked = st.button("Scan now", type="primary", key="live_scan_btn")
+    if clicked or due:
+        try:
+            found, dfs, errs, total = run_scan(n_coins, tfs, lookback, rr, params)
+        except E.DataError as e:
+            st.error(f"Could not load data. {e}")
+            return
+        first = last_ts is None
+        seen = ss.setdefault("live_seen", set())
+        fresh = []
+        for r in found:
+            key = (r["coin"], r["tf"], str(r["time"]))
+            if key not in seen:
+                seen.add(key)
+                if r["status"] == "OPEN":
+                    fresh.append(r)
+        if auto and not first:
+            for r in sorted(fresh, key=lambda x: x["ago"])[:5]:
+                st.toast(f"{r['side']} {r['coin']} {r['tf']}  entry {fmt_price(r['entry'])}  "
+                         f"SL {fmt_price(r['sl'])}  TP {fmt_price(r['tp'])}",
+                         icon="🟢" if r["dir"] == 1 else "🔴")
+        ss["live"] = (found, dfs, errs, total)
+        ss["live_ts"] = time.time()
+        ss["live_sig"] = sig
+
+    res = ss.get("live")
+    if not res:
+        st.info("Press **Scan now** (or keep Auto-scan on) to look for fresh IFVG signals.")
+        return
+    found, dfs, errs, total = res
+    ts_ist = (pd.Timestamp(ss["live_ts"], unit="s") + pd.Timedelta(hours=5, minutes=30)).strftime("%H:%M:%S")
+    mode = "auto-scans after every candle close, keep this page open" if auto else "auto-scan is off"
+    st.caption(f"Last scan {ts_ist} IST - {total - errs}/{total} coin-timeframes - {len(found)} signals - {mode}.")
+
+    show = st.multiselect("Show", LIVE_STATUS, default=["OPEN", "TP hit", "SL hit"], key="live_show", help=STATUS_HELP)
+    rows = [r for r in found if r["status"] in show]
+    if not rows:
+        st.info("No signals in this window. Increase N, add timeframes, or add BLOCKED / finished trades under Show.")
+        return
+    rows.sort(key=lambda r: (r["ago"], E.TFS.index(r["tf"]), r["coin"]))
+
+    fee_frac = params["fee_side_pct"] / 100.0
+    table = []
+    for r in rows:
+        fee_r = 2 * fee_frac * r["entry"] / r["risk"]             # round-trip fee as a multiple of the risk (R)
+        table.append({
+            "Coin": r["coin"], "TF": r["tf"], "Side": r["side"], "Status": r["status"], "Ago": r["ago"],
+            "Signal time (IST)": to_ist(r["time"]).strftime("%d %b %H:%M"),
+            "Entry": fmt_price(r["entry"]), "SL": fmt_price(r["sl"]), "TP": fmt_price(r["tp"]),
+            "Last close": fmt_price(r["last_close"]),
+            "Move (R)": round((r["last_close"] - r["entry"]) * r["dir"] / r["risk"], 2),
+            "Fee (R)": round(fee_r, 3)})
+    st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
+    st.caption("Ago = closed candles since the signal. Move (R) = how far the last close is from entry in units of risk "
+               "(+1 = 1R in profit). Fee (R) = round-trip Binance fee as a share of the risk.")
+
+    st.subheader("Chart")
+    labels = [f"{r['coin']} {r['tf']} {r['side']} - {r['status']} - {r['ago']} ago" for r in rows]
+    pick = st.selectbox("Signal", range(len(rows)), format_func=lambda i: labels[i], key="live_pick")
+    r = rows[pick] if pick < len(rows) else rows[0]
+    df = dfs[(r["coin"], r["tf"])]
+    st.plotly_chart(build_signal_chart(df, r), width="stretch", config={"displayModeBar": False})
+
+    risk_pct_move = r["risk"] / r["entry"] * 100
+    fee_r = 2 * fee_frac * r["entry"] / r["risk"]
+    st.markdown(
+        f"**{r['coin']}/USDT {r['tf']} {r['side']}** - entry `{fmt_price(r['entry'])}`, "
+        f"SL `{fmt_price(r['sl'])}` ({risk_pct_move:.2f}% away), TP `{fmt_price(r['tp'])}` ({rr}R).  \n"
+        f"After the {params['fee_side_pct']:.3f}% per side fee: TP = **+{rr - fee_r:.2f}R**, SL = **-{1 + fee_r:.2f}R**.")
+
+
 with tab_live:
     c1, c2, c3 = st.columns(3)
-    l_coins = c1.slider("Top coins by volume ", 5, 100, 100, 5, key="lc")
-    l_tfs = c2.multiselect("Timeframes ", E.TFS, default=["5m", "15m", "1h", "4h"], key="lt")
-    lookback = c3.slider("Signal in last N closed candles", 1, 10, 2)
-    l_rr = st.selectbox("RR for TP level", [1, 2, 3, 4, 5], index=2, format_func=lambda x: f"{x}R")
-
-    if st.button("Scan now", type="primary"):
-        try:
-            with st.spinner("Loading top volume pairs..."):
-                symbols = E.get_top_symbols(l_coins)
-        except E.DataError as e:
-            st.error(f"Could not load pairs. {e}")
-            st.stop()
-        tasks = [(s, tf) for s in symbols for tf in l_tfs]
-        found, errs = [], 0
-        prog = st.progress(0.0)
-
-        def scan(task):
-            sym, tf = task
-            try:
-                df = E.fetch_klines(sym, tf, 400)
-                if df is None or len(df) < 100:
-                    return []
-                out = []
-                for sig, a, t in E.latest_signals(df, params, lookback):
-                    bar, d, top, bot, cl = sig
-                    entry = E.entry_price(sig, params)
-                    risk = a * params["sl_mult"]
-                    out.append(dict(
-                        coin=sym[:-4], tf=tf, side="BUY (IFVG+)" if d == 1 else "SELL (IFVG-)",
-                        candles_ago=len(df) - 1 - bar, candle_time=t, entry=entry,
-                        sl=entry - d * risk, tp=entry + d * risk * l_rr, close=df["c"].iloc[-1]))
-                return out
-            except Exception:
-                return None
-
-        done = 0
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for out in pool.map(scan, tasks):
-                done += 1
-                prog.progress(done / len(tasks))
-                if out is None:
-                    errs += 1
-                else:
-                    found.extend(out)
-        prog.empty()
-        st.session_state["live"] = (found, errs, len(tasks))
-
-    live = st.session_state.get("live")
-    if live:
-        found, errs, total = live
-        st.caption(f"Scanned {total - errs}/{total} coin-timeframes. {len(found)} signals.")
-        if found:
-            ldf = pd.DataFrame(found).sort_values(["candles_ago", "tf"])
-            st.dataframe(ldf, width="stretch", hide_index=True)
-        else:
-            st.info("No fresh IFVG signals right now. Increase the lookback or add more timeframes.")
-    else:
-        st.info("Press **Scan now** to look for fresh IFVG signals.")
+    c1.slider("Top coins by volume ", 5, 100, 100, 5, key="lc")
+    c2.multiselect("Timeframes ", E.TFS, default=["5m", "15m", "1h", "4h"], key="lt")
+    c3.slider("Signal in last N closed candles", 1, 10, 2, key="ln")
+    st.selectbox("RR for TP level", [1, 2, 3, 4, 5], index=2, format_func=lambda x: f"{x}R", key="lrr")
+    auto_on = st.toggle("Auto-scan after every candle close", value=True, key="live_auto",
+                        help="Checks every 15 seconds and scans again 3 seconds after a candle closes on the smallest "
+                             "selected timeframe. New OPEN signals pop up as a toast. Works while this page is open.")
+    st.fragment(run_every=15 if auto_on else None)(live_panel)()

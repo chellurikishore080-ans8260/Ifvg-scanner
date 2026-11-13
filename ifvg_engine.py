@@ -44,7 +44,7 @@ DEFAULT_PARAMS = dict(
     filter="Balanced", atr_len=14, sl_mult=1.5, max_hidden=120, max_age=60,
     entry_mode="Confirmation Close",      # Pine default is "IFVG Line"; close is the realistic fill
     line_mode="Broken Boundary",
-    capital=100_000.0, risk_pct=1.0, fee_side_pct=0.01, max_leverage=5.0,
+    capital=100_000.0, risk_pct=1.0, fee_side_pct=0.1, max_leverage=5.0,   # 0.1% = 0.001 = Binance spot fee per side
 )
 
 
@@ -107,11 +107,14 @@ def fetch_klines(symbol, interval, total):
             break
     if len(out) < 2:
         return None
-    df = pd.DataFrame(out).iloc[:, :6]
+    raw = pd.DataFrame(out)
+    close_ms = raw.iloc[:, 6].astype(float).values          # candle close time (ms)
+    df = raw.iloc[:, :6].copy()
     df.columns = ["t", "o", "h", "l", "c", "v"]
     df = df.astype(float)
     df["t"] = pd.to_datetime(df["t"], unit="ms")
-    return df.iloc[:-1].reset_index(drop=True)  # drop the live (unconfirmed) candle
+    # keep only candles that have really closed (drops the live, unconfirmed one)
+    return df[close_ms < time.time() * 1000.0].reset_index(drop=True)
 
 
 # ───────────────────────── ENGINE ─────────────────────────
@@ -307,6 +310,46 @@ def latest_signals(df, p, lookback=3):
         if s[0] >= n - lookback and not math.isnan(atr[s[0]]):
             res.append((s, atr[s[0]], df["t"].iloc[s[0]]))
     return res
+
+
+def live_signals(df, p, rr, lookback=3):
+    """Signals formed in the last `lookback` closed candles, each with its trade state.
+
+    Same one-trade-at-a-time rule as simulate(), so the live scanner agrees with the backtest.
+    status: OPEN (entry taken, neither TP nor SL touched yet), TP hit, SL hit,
+            BLOCKED (another trade of this coin/timeframe was still open, the backtest skips it).
+    """
+    o, h, l, c = (df[k].values for k in ("o", "h", "l", "c"))
+    atr = atr_rma(h, l, c, p["atr_len"])
+    signals, _ = gen_signals(o, h, l, c, atr, p)
+    n = len(df)
+    hl, ll = h.tolist(), l.tolist()
+    blocked_until = -1
+    out = []
+    for sig in signals:
+        b, d = sig[0], sig[1]
+        a = atr[b]
+        if math.isnan(a) or a <= 0:
+            continue
+        entry = entry_price(sig, p)
+        risk = a * p["sl_mult"]
+        sl, tp = entry - d * risk, entry + d * risk * rr
+        status, exit_bar = "OPEN", None
+        for j in range(b + 1, n):          # SL is checked before TP, like simulate()
+            if (ll[j] <= sl) if d == 1 else (hl[j] >= sl):
+                status, exit_bar = "SL hit", j
+                break
+            if (hl[j] >= tp) if d == 1 else (ll[j] <= tp):
+                status, exit_bar = "TP hit", j
+                break
+        if b <= blocked_until:
+            status, exit_bar = "BLOCKED", None
+        else:
+            blocked_until = exit_bar if exit_bar is not None else n
+        if b >= n - lookback:
+            out.append(dict(bar=b, dir=d, top=sig[2], bot=sig[3], entry=entry, sl=sl, tp=tp, risk=risk,
+                            atr=a, status=status, exit_bar=exit_bar, time=df["t"].iloc[b]))
+    return out
 
 
 def aggregate(rows):
