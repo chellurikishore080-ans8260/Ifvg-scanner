@@ -25,7 +25,7 @@ Main file: `app.py`. Requirements: `requirements.txt`.
 3. Confirmation FVG after the IFVG forms
 4. Wick rejection on the first retest only
 
-Extras (toggles): first/manipulation gap, speed of breakout. It backtests the top 30 Binance Vision spot USDT coins by 24h volume, XAUTUSDT and silver (Yahoo SI=F) on all selected timeframes at 1R / 1.5R / 2R / 3R, ranks timeframes by win rate and average R, and keeps out-of-sample (last 40%) numbers separate. Money: each coin/timeframe/RR is a separate Rs 1,00,000 account and every SL hit loses 4% of the starting capital (Rs 4,000, plus fees), fixed with no compounding. Both numbers are editable in Settings. Results show PnL in rupees, ROI %, max drawdown % and the position size as a multiple of capital. The previous IFVG Sniper Streamlit app is still in git history (commit e58c83c).
+Extras (toggles): first/manipulation gap, speed of breakout. It backtests the top 30 Binance Vision spot USDT coins by 24h volume, XAUTUSDT and silver (Yahoo SI=F) on all selected timeframes at 1R / 1.5R / 2R / 3R, ranks timeframes by win rate and average R, and keeps out-of-sample (last 40%) numbers separate. Money: each coin/timeframe/RR is a separate Rs 1,00,000 account and every SL hit loses 4% of the starting capital (Rs 4,000), fixed with no compounding. No fees or slippage are charged. Both numbers are editable in Settings. Results show PnL in rupees, ROI %, max drawdown % and the position size as a multiple of capital. The previous IFVG Sniper Streamlit app is still in git history (commit e58c83c).
 
 ## Live scanner (previous IFVG Sniper app, see commit e58c83c)
 

@@ -49,7 +49,7 @@ DEFAULT_P = dict(
     conf_window=8, conf_dist=1.0,
     retest_window=30, min_wick=0.30,
     sl_buf=0.10, max_risk_atr=4.0, max_hold=100,
-    rrs=[1.0, 1.5, 2.0, 3.0], fee=0.001,
+    rrs=[1.0, 1.5, 2.0, 3.0], fee=0.0,
     capital=100000.0, risk_pct=4.0, one_at_a_time=True,
 )
 
@@ -400,7 +400,7 @@ def add_money(tr, P):
     """Fixed rupee risk per trade (risk_pct of starting capital, no compounding)."""
     risk_amt = P["capital"] * P["risk_pct"] / 100
     tr["capital"] = P["capital"]
-    tr["pnl"] = tr["r"] * risk_amt                       # SL = -risk_amt (minus fees), TP = +RR x risk_amt
+    tr["pnl"] = tr["r"] * risk_amt                       # SL = -risk_amt, TP = +RR x risk_amt
     tr["pos_x"] = (P["risk_pct"] / 100) / tr["sl_pct"]   # position value as a multiple of capital
     return tr
 
@@ -504,13 +504,12 @@ with st.expander("⚙️ Market & backtest settings", expanded=True):
     n_candles = st.slider("Candles per timeframe", 1000, 10000, 3000, 500)
     rrs = st.multiselect("Reward:Risk targets (each is backtested)", [1.0, 1.5, 2.0, 3.0, 4.0],
                          default=[1.0, 1.5, 2.0, 3.0])
-    fee = st.number_input("Fee + slippage per side (%)", 0.0, 0.5, 0.10, 0.01)
     m1, m2 = st.columns(2)
     capital = m1.number_input("Capital per coin (₹)", 10000, 100000000, 100000, 10000)
     risk_pct = m2.number_input("Loss per SL hit (% of capital)", 0.1, 10.0, 4.0, 0.5)
     one_trade = st.checkbox("One trade at a time per coin/timeframe", True)
-    st.caption(f"SL hit = about -₹{capital * risk_pct / 100:,.0f} (+ fees). TP at 2R = +₹{2 * capital * risk_pct / 100:,.0f}. "
-               "Fixed risk on the starting capital, no compounding.")
+    st.caption(f"SL hit = -₹{capital * risk_pct / 100:,.0f}. TP at 2R = +₹{2 * capital * risk_pct / 100:,.0f}. "
+               "Fixed risk on the starting capital, no compounding. No fees are charged.")
 
 with st.expander("🧩 Strategy rules (4-step checklist)"):
     r1, r2 = st.columns(2)
@@ -527,7 +526,7 @@ with st.expander("🧩 Strategy rules (4-step checklist)"):
     P["conf_window"] = r1.slider("Max bars to wait for confirmation FVG", 2, 30, 8)
     P["max_hold"] = r2.slider("Max bars to hold a trade", 20, 300, 100)
     P["rrs"] = sorted(rrs) if rrs else [2.0]
-    P["fee"] = fee / 100
+    P["fee"] = 0.0  # no fees or slippage in the backtest
     P["capital"] = float(capital)
     P["risk_pct"] = float(risk_pct)
     P["one_at_a_time"] = one_trade
@@ -570,7 +569,7 @@ with tab1:
             c1.caption("Win rate %")
             c1.dataframe(pool.pivot(index="tf", columns="rr", values="win%").reindex(
                 [t for t in ALL_TFS if t in set(pool["tf"])]).round(1))
-            c2.caption("Average R per trade (after fees)")
+            c2.caption("Average R per trade")
             c2.dataframe(pool.pivot(index="tf", columns="rr", values="avgR").reindex(
                 [t for t in ALL_TFS if t in set(pool["tf"])]).round(3))
             with st.expander("Full pooled table"):
@@ -662,10 +661,10 @@ with tab4:
    close outside it with a wick ≥ 30% of its range. A body closing inside the zone, or a close beyond the zone,
    cancels the setup.
 6. **Entry / exit** - entry at the next candle open. SL beyond the zone/wick low (+0.1 ATR). TP at the chosen RR.
-   If SL and TP are both hit in one candle, SL is assumed first. Fees+slippage are subtracted in R.
+   If SL and TP are both hit in one candle, SL is assumed first. No fees or slippage are charged.
 7. **Money** - every coin/timeframe/RR is its own ₹1,00,000 account. Each SL hit loses 4% of the starting capital
    (₹4,000), a TP at 2R wins ₹8,000. Position size = ₹4,000 / SL distance %, so a tight SL needs a position bigger
-   than the capital (`avg_pos_x` shows by how much). Fees make an SL hit slightly bigger than ₹4,000.
+   than the capital (`avg_pos_x` shows by how much).
    One trade at a time per coin/timeframe (switchable).
 
 **Honest notes**
