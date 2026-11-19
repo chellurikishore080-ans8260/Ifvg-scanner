@@ -50,6 +50,7 @@ DEFAULT_P = dict(
     retest_window=30, min_wick=0.30,
     sl_buf=0.10, max_risk_atr=4.0, max_hold=100,
     rrs=[1.0, 1.5, 2.0, 3.0], fee=0.001,
+    capital=100000.0, risk_pct=4.0, one_at_a_time=True,
 )
 
 _lock_yf = threading.Lock()
@@ -336,7 +337,7 @@ def scan(df, P):
     o, h, l, c = (df[k].values for k in ("open", "high", "low", "close"))
     n = len(c)
     cols = ["signal_time", "entry_time", "side", "rr", "entry", "sl", "tp", "exit_time", "exit",
-            "outcome", "r", "ifvg_time", "zone_bot", "zone_top", "bars_held"]
+            "outcome", "r", "ifvg_time", "zone_bot", "zone_top", "bars_held", "sl_pct"]
     if n < P["ema_slow"] + 60:
         return pd.DataFrame(columns=cols), [], []
     at = atr(h, l, c)
@@ -357,13 +358,18 @@ def scan(df, P):
                                  entry=sg * s["entry"], sl=sg * s["sl"],
                                  tp=sg * (s["entry"] + rr * s["risk"]), exit_time=t[j],
                                  exit=sg * px, outcome=out, r=r - cost, ifvg_time=t[s["b"]],
-                                 zone_bot=zb, zone_top=zt, bars_held=j - s["e"]))
+                                 zone_bot=zb, zone_top=zt, bars_held=j - s["e"],
+                                 sl_pct=s["risk"] / abs(s["entry"])))
         for lv in live:
             risk = lv["entry"] - lv["sl"]
             zb, zt = sorted((sg * lv["bot"], sg * lv["top"]))
+            risk_amt = P["capital"] * P["risk_pct"] / 100
+            pos_val = risk_amt * abs(lv["entry"]) / risk
             live_all.append(dict(time=t[lv["r"]], side=side, entry=sg * lv["entry"], sl=sg * lv["sl"],
                                  tp_1R=sg * (lv["entry"] + risk), tp_2R=sg * (lv["entry"] + 2 * risk),
-                                 tp_3R=sg * (lv["entry"] + 3 * risk), zone_bot=zb, zone_top=zt))
+                                 tp_3R=sg * (lv["entry"] + 3 * risk), zone_bot=zb, zone_top=zt,
+                                 risk_Rs=round(risk_amt), position_value_Rs=round(pos_val),
+                                 position_x_capital=round(pos_val / P["capital"], 2)))
         for w in watch:
             zb, zt = sorted((sg * w["bot"], sg * w["top"]))
             watch_all.append(dict(side=side, status=w["status"], zone_bot=zb, zone_top=zt,
@@ -376,16 +382,46 @@ def scan(df, P):
 # Backtest runner + statistics
 # ----------------------------------------------------------------------------
 
+def one_at_a_time(tr):
+    """Per RR: skip a setup if the previous trade of the same coin/timeframe is still running."""
+    if tr.empty:
+        return tr
+    keep = []
+    for _, g in tr.groupby("rr"):
+        last_exit = None
+        for idx, row in g.sort_values("entry_time").iterrows():
+            if last_exit is None or row["entry_time"] > last_exit:
+                keep.append(idx)
+                last_exit = row["exit_time"]
+    return tr.loc[sorted(keep)]
+
+
+def add_money(tr, P):
+    """Fixed rupee risk per trade (risk_pct of starting capital, no compounding)."""
+    risk_amt = P["capital"] * P["risk_pct"] / 100
+    tr["capital"] = P["capital"]
+    tr["pnl"] = tr["r"] * risk_amt                       # SL = -risk_amt (minus fees), TP = +RR x risk_amt
+    tr["pos_x"] = (P["risk_pct"] / 100) / tr["sl_pct"]   # position value as a multiple of capital
+    return tr
+
+
 def stats(g):
     n = len(g)
     if n == 0:
-        return {"trades": 0, "win%": np.nan, "avgR": np.nan, "PF": np.nan, "totalR": 0.0, "maxDD_R": 0.0}
-    r = g.sort_values("entry_time")["r"]
+        return {"trades": 0, "win%": np.nan, "avgR": np.nan, "PF": np.nan, "totalR": 0.0, "maxDD_R": 0.0,
+                "PnL_Rs": 0.0, "ROI%": 0.0, "maxDD%": 0.0, "avg_pos_x": np.nan, "max_pos_x": np.nan}
+    g = g.sort_values("entry_time")
+    r = g["r"]
     gp, gl = r[r > 0].sum(), -r[r < 0].sum()
     eq = r.cumsum()
+    base = g["capital"].iloc[0] * max(1, g["symbol"].nunique())   # one account per coin
+    eqp = g["pnl"].cumsum()
     return {"trades": n, "win%": 100 * (r > 0).mean(), "avgR": r.mean(),
             "PF": (gp / gl) if gl > 0 else np.inf, "totalR": r.sum(),
-            "maxDD_R": (eq.cummax() - eq).max()}
+            "maxDD_R": (eq.cummax() - eq).max(),
+            "PnL_Rs": g["pnl"].sum(), "ROI%": 100 * g["pnl"].sum() / base,
+            "maxDD%": 100 * (eqp.cummax() - eqp).max() / base,
+            "avg_pos_x": g["pos_x"].mean(), "max_pos_x": g["pos_x"].max()}
 
 
 def summarize(df, keys):
@@ -421,9 +457,12 @@ def run_backtest(symbols, tfs, n_candles, P, progress):
     all_tr, live, watch, cover = [], [], [], []
     for i, ((s, tf), df) in enumerate(data.items()):
         tr, lv, wt = scan(df, P)
+        if P["one_at_a_time"]:
+            tr = one_at_a_time(tr)
         split = df.index[0] + 0.6 * (df.index[-1] - df.index[0])
         tr["symbol"], tr["tf"] = s, tf
         tr["oos"] = tr["entry_time"] >= split
+        tr = add_money(tr, P)
         all_tr.append(tr)
         for x in lv:
             live.append(dict(symbol=s, tf=tf, **x))
@@ -466,6 +505,12 @@ with st.expander("⚙️ Market & backtest settings", expanded=True):
     rrs = st.multiselect("Reward:Risk targets (each is backtested)", [1.0, 1.5, 2.0, 3.0, 4.0],
                          default=[1.0, 1.5, 2.0, 3.0])
     fee = st.number_input("Fee + slippage per side (%)", 0.0, 0.5, 0.10, 0.01)
+    m1, m2 = st.columns(2)
+    capital = m1.number_input("Capital per coin (₹)", 10000, 100000000, 100000, 10000)
+    risk_pct = m2.number_input("Loss per SL hit (% of capital)", 0.1, 10.0, 4.0, 0.5)
+    one_trade = st.checkbox("One trade at a time per coin/timeframe", True)
+    st.caption(f"SL hit = about -₹{capital * risk_pct / 100:,.0f} (+ fees). TP at 2R = +₹{2 * capital * risk_pct / 100:,.0f}. "
+               "Fixed risk on the starting capital, no compounding.")
 
 with st.expander("🧩 Strategy rules (4-step checklist)"):
     r1, r2 = st.columns(2)
@@ -483,6 +528,9 @@ with st.expander("🧩 Strategy rules (4-step checklist)"):
     P["max_hold"] = r2.slider("Max bars to hold a trade", 20, 300, 100)
     P["rrs"] = sorted(rrs) if rrs else [2.0]
     P["fee"] = fee / 100
+    P["capital"] = float(capital)
+    P["risk_pct"] = float(risk_pct)
+    P["one_at_a_time"] = one_trade
 
 if st.button("🚀 Run backtest + live scan", type="primary", width="stretch"):
     if not tfs:
@@ -538,9 +586,11 @@ with tab1:
             sel = combo[(combo["trades"] >= min_tr) & (combo["win%"] >= min_win) & (combo["PF"] >= min_pf)]
             if need_oos:
                 sel = sel[(sel["OOS_trades"] >= 5) & (sel["OOS_avgR"] > 0)]
-            sort_by = st.selectbox("Sort by", ["avgR", "win%", "PF", "totalR", "OOS_avgR", "trades"])
+            sort_by = st.selectbox("Sort by", ["avgR", "win%", "PF", "PnL_Rs", "ROI%", "totalR", "OOS_avgR", "trades"])
             sel = sel.sort_values(sort_by, ascending=False)
-            st.caption(f"{len(sel)} combos pass. OOS = last 40% of each data range (not used to judge in-sample).")
+            st.caption(f"{len(sel)} combos pass. OOS = last 40% of each data range (not used to judge in-sample). "
+                       "PnL_Rs / ROI% / maxDD% are for one account of the starting capital per coin; "
+                       "avg_pos_x = position size as a multiple of capital (above 1 needs leverage).")
             show(sel.round(2).head(100))
             st.download_button("⬇️ All trades CSV", closed.to_csv(index=False).encode(), "ifvg_trades.csv")
             with st.expander("Data coverage (how far back each timeframe goes)"):
@@ -592,7 +642,8 @@ with tab3:
         st.plotly_chart(fig, width="stretch")
         s_ = stats(t_[t_["outcome"] != "OPEN"])
         st.write(f"**{sym} {tfc} RR {rr_sel}:** {s_['trades']} trades, win {s_['win%']:.1f}%, "
-                 f"avg R {s_['avgR']:.2f}, PF {s_['PF']:.2f}, total R {s_['totalR']:.1f}")
+                 f"avg R {s_['avgR']:.2f}, PF {s_['PF']:.2f}, total R {s_['totalR']:.1f} | "
+                 f"PnL ₹{s_['PnL_Rs']:,.0f} ({s_['ROI%']:.1f}%), max drawdown {s_['maxDD%']:.1f}%")
         show(to_ist(t_.drop(columns=["oos", "symbol", "tf"]), ["signal_time", "entry_time", "exit_time",
                                                                "ifvg_time"]).round(5).tail(50))
 
@@ -612,6 +663,10 @@ with tab4:
    cancels the setup.
 6. **Entry / exit** - entry at the next candle open. SL beyond the zone/wick low (+0.1 ATR). TP at the chosen RR.
    If SL and TP are both hit in one candle, SL is assumed first. Fees+slippage are subtracted in R.
+7. **Money** - every coin/timeframe/RR is its own ₹1,00,000 account. Each SL hit loses 4% of the starting capital
+   (₹4,000), a TP at 2R wins ₹8,000. Position size = ₹4,000 / SL distance %, so a tight SL needs a position bigger
+   than the capital (`avg_pos_x` shows by how much). Fees make an SL hit slightly bigger than ₹4,000.
+   One trade at a time per coin/timeframe (switchable).
 
 **Honest notes**
 - Backtests are not a promise. Prefer combos with many trades, win rate and profit factor that hold on the
